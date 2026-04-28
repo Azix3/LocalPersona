@@ -238,6 +238,15 @@ function App() {
     });
   }
 
+  async function checkForUpdates() {
+    setUpdateStatus((previous) => ({ ...previous, state: 'checking', message: 'Checking for updates.' }));
+    try {
+      setUpdateStatus(await window.localAI.checkForUpdates());
+    } catch (error) {
+      setUpdateStatus((previous) => ({ ...previous, state: 'error', message: errorMessage(error) }));
+    }
+  }
+
   async function downloadUpdate() {
     setUpdateStatus((previous) => ({ ...previous, state: 'downloading', percent: 0, message: 'Starting update download.' }));
     try {
@@ -539,7 +548,7 @@ function App() {
         </div>
         <div className="topbar-actions">
           <StatusPill status={ollamaStatus} installing={installing} />
-          <UpdateControl status={updateStatus} onDownload={downloadUpdate} onInstall={installUpdate} />
+          <UpdateControl status={updateStatus} onCheck={checkForUpdates} onDownload={downloadUpdate} onInstall={installUpdate} />
           <button className="icon-button" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onClick={toggleTheme}>
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
           </button>
@@ -971,10 +980,12 @@ function CharacterEditor({
 
 function UpdateControl({
   status,
+  onCheck,
   onDownload,
   onInstall
 }: {
   status: UpdateStatus;
+  onCheck: () => void;
   onDownload: () => void;
   onInstall: () => void;
 }) {
@@ -984,7 +995,7 @@ function UpdateControl({
     return (
       <button className="text-button update-control available" title={title} onClick={onDownload}>
         <Download size={17} />
-        Update
+        download update
       </button>
     );
   }
@@ -993,7 +1004,7 @@ function UpdateControl({
     return (
       <button className="text-button update-control downloaded" title={title} onClick={onInstall}>
         <RefreshCw size={17} />
-        Restart
+        restart
       </button>
     );
   }
@@ -1007,7 +1018,21 @@ function UpdateControl({
     );
   }
 
-  return null;
+  if (status.state === 'checking') {
+    return (
+      <button className="text-button update-control" title={title} disabled>
+        <Loader2 size={17} className="spin" />
+        check for update
+      </button>
+    );
+  }
+
+  return (
+    <button className={`text-button update-control ${status.state === 'error' ? 'error' : ''}`} title={title} onClick={onCheck}>
+      {status.state === 'error' ? <AlertCircle size={17} /> : <RefreshCw size={17} />}
+      check for update
+    </button>
+  );
 }
 
 function StatusPill({ status, installing }: { status: OllamaStatus | null; installing: boolean }) {

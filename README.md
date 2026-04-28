@@ -10,7 +10,8 @@ A Windows-friendly Electron app for local character chat with Ollama.
 - Pulls models into the user's local Ollama installation.
 - Provides a character browser, character creator, and persistent chat sessions.
 - Imports and exports the local character/session workspace as JSON.
-- Checks GitHub Releases for app updates once on launch.
+- Checks GitHub Releases for app updates once on launch, with a manual `check for update` button.
+- Keeps installer and portable updates separate: installed builds use the setup installer metadata, and portable builds download the matching portable executable.
 
 ## Development
 
@@ -33,4 +34,5 @@ Create a GitHub Release in `Azix3/LocalPersona` and upload:
 
 - `release/LocalPersona-Setup-<version>-x64.exe`
 - `release/LocalPersona-Setup-<version>-x64.exe.blockmap`
+- `release/LocalPersona-Portable-<version>-x64.exe`
 - `release/latest.yml`

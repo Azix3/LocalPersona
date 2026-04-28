@@ -35,6 +35,7 @@ declare global {
       pullModel: (model: string) => Promise<LocalModel[]>;
       sendChat: (payload: ChatPayload) => Promise<{ content: string }>;
       cancelChat: (requestId: string) => Promise<boolean>;
+      checkForUpdates: () => Promise<UpdateStatus>;
       getUpdateStatus: () => Promise<UpdateStatus>;
       downloadUpdate: () => Promise<UpdateStatus>;
       installUpdate: () => Promise<UpdateStatus>;

@@ -103,9 +103,11 @@ export type ImportResult = {
 };
 
 export type UpdateState = 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+export type UpdatePackageKind = 'development' | 'installer' | 'portable';
 
 export type UpdateStatus = {
   state: UpdateState;
+  packageKind?: UpdatePackageKind;
   currentVersion?: string;
   version?: string;
   percent?: number;

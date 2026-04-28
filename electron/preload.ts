@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('localAI', {
   pullModel: (model: string) => ipcRenderer.invoke('models:pull', model),
   sendChat: (payload: unknown) => ipcRenderer.invoke('chat:send', payload),
   cancelChat: (requestId: string) => ipcRenderer.invoke('chat:cancel', requestId),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   getUpdateStatus: () => ipcRenderer.invoke('updates:status'),
   downloadUpdate: () => ipcRenderer.invoke('updates:download'),
   installUpdate: () => ipcRenderer.invoke('updates:install'),

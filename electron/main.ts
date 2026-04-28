@@ -17,10 +17,13 @@ import type {
   OllamaStatus,
   PromptMode,
   PullProgress,
+  UpdatePackageKind,
   UpdateStatus
 } from '../src/types';
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_API_BASE ?? 'http://127.0.0.1:11434';
+const GITHUB_LATEST_RELEASE_URL = 'https://api.github.com/repos/Azix3/LocalPersona/releases/latest';
+const PRODUCT_NAME = 'LocalPersona';
 const STORE_VERSION = 1;
 const HIDDEN_ROLEPLAY_PROMPT = [
   'You are a character roleplay chat model.',
@@ -60,6 +63,26 @@ let ollamaServeProcess: ReturnType<typeof spawn> | null = null;
 const activeChatRequests = new Map<string, AbortController>();
 let latestUpdateStatus: UpdateStatus = { state: 'idle' };
 let updateErrorIsSilent = false;
+let portableUpdateAsset: PortableUpdateAsset | null = null;
+
+type PortableUpdateAsset = {
+  version: string;
+  fileName: string;
+  downloadUrl: string;
+  size?: number;
+  downloadedPath?: string;
+};
+
+type GitHubRelease = {
+  tag_name?: string;
+  name?: string;
+  assets?: Array<{
+    name?: string;
+    browser_download_url?: string;
+    size?: number;
+    state?: string;
+  }>;
+};
 
 const seedCharacters: CharacterProfile[] = [
   {
@@ -453,6 +476,7 @@ function registerIpc() {
   ipcMain.handle('models:pull', async (_event, model: string) => pullModel(model));
   ipcMain.handle('chat:send', async (_event, payload: ChatPayload) => sendChat(payload));
   ipcMain.handle('chat:cancel', async (_event, requestId: string) => cancelChat(requestId));
+  ipcMain.handle('updates:check', async () => checkForUpdates(true));
   ipcMain.handle('updates:download', async () => downloadUpdate());
   ipcMain.handle('updates:install', async () => installDownloadedUpdate());
   ipcMain.handle('updates:status', async () => latestUpdateStatus);
@@ -467,32 +491,37 @@ function configureAutoUpdater() {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
+  if (getUpdatePackageKind() !== 'installer') {
+    publishUpdateStatus({ state: 'idle' });
+    return;
+  }
+
   autoUpdater.on('checking-for-update', () => {
-    publishUpdateStatus({ state: 'checking', message: 'Checking for updates.' });
+    publishUpdateStatus({ state: 'checking', message: 'Checking for installer updates.' });
   });
   autoUpdater.on('update-available', (info: UpdateInfo) => {
     updateErrorIsSilent = false;
-    publishUpdateStatus({ state: 'available', version: info.version, message: `LocalPersona ${info.version} is available.` });
+    publishUpdateStatus({ state: 'available', version: info.version, message: `LocalPersona ${info.version} installer update is available.` });
   });
   autoUpdater.on('update-not-available', (info: UpdateInfo) => {
     updateErrorIsSilent = false;
-    publishUpdateStatus({ state: 'not-available', version: info.version, message: 'LocalPersona is up to date.' });
+    publishUpdateStatus({ state: 'not-available', version: info.version, message: 'LocalPersona installer is up to date.' });
   });
   autoUpdater.on('download-progress', (progress: ProgressInfo) => {
     publishUpdateStatus({
       state: 'downloading',
       percent: Math.round(progress.percent),
-      message: `Downloading update ${Math.round(progress.percent)}%.`
+      message: `Downloading installer update ${Math.round(progress.percent)}%.`
     });
   });
   autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
     updateErrorIsSilent = false;
-    publishUpdateStatus({ state: 'downloaded', version: info.version, message: `LocalPersona ${info.version} is ready to install.` });
+    publishUpdateStatus({ state: 'downloaded', version: info.version, message: `LocalPersona ${info.version} installer update is ready to install.` });
   });
   autoUpdater.on('error', (error) => {
     if (updateErrorIsSilent) {
       updateErrorIsSilent = false;
-      latestUpdateStatus = { state: 'idle', currentVersion: app.getVersion() };
+      publishUpdateStatus({ state: 'idle' });
       return;
     }
     publishUpdateStatus({ state: 'error', message: stringifyError(error) });
@@ -506,6 +535,10 @@ async function checkForUpdates(showErrors: boolean): Promise<UpdateStatus> {
     return publishUpdateStatus({ state: 'not-available', message: 'Updates are checked in the packaged app.' });
   }
 
+  if (getUpdatePackageKind() === 'portable') {
+    return checkForPortableUpdates(showErrors);
+  }
+
   updateErrorIsSilent = !showErrors;
   try {
     await autoUpdater.checkForUpdates();
@@ -515,7 +548,7 @@ async function checkForUpdates(showErrors: boolean): Promise<UpdateStatus> {
     if (showErrors) {
       return publishUpdateStatus({ state: 'error', message: stringifyError(error) });
     }
-    latestUpdateStatus = { state: 'idle', currentVersion: app.getVersion() };
+    return publishUpdateStatus({ state: 'idle' });
   }
   return latestUpdateStatus;
 }
@@ -525,8 +558,12 @@ async function downloadUpdate(): Promise<UpdateStatus> {
     return publishUpdateStatus({ state: 'not-available', message: 'Updates are downloaded in the packaged app.' });
   }
 
+  if (getUpdatePackageKind() === 'portable') {
+    return downloadPortableUpdate();
+  }
+
   try {
-    publishUpdateStatus({ state: 'downloading', percent: 0, message: 'Starting update download.' });
+    publishUpdateStatus({ state: 'downloading', percent: 0, message: 'Starting installer update download.' });
     await autoUpdater.downloadUpdate();
   } catch (error) {
     return publishUpdateStatus({ state: 'error', message: stringifyError(error) });
@@ -534,18 +571,278 @@ async function downloadUpdate(): Promise<UpdateStatus> {
   return latestUpdateStatus;
 }
 
-function installDownloadedUpdate() {
+async function installDownloadedUpdate(): Promise<UpdateStatus> {
+  if (getUpdatePackageKind() === 'portable') {
+    return installPortableUpdate();
+  }
+
   autoUpdater.quitAndInstall(false, true);
   return latestUpdateStatus;
 }
 
 function publishUpdateStatus(status: UpdateStatus) {
-  latestUpdateStatus = {
-    ...status,
-    currentVersion: app.getVersion()
-  };
+  latestUpdateStatus = withCurrentUpdateFields(status);
   sendToRenderer('updates:status', latestUpdateStatus);
   return latestUpdateStatus;
+}
+
+function withCurrentUpdateFields(status: UpdateStatus): UpdateStatus {
+  return {
+    ...status,
+    packageKind: getUpdatePackageKind(),
+    currentVersion: app.getVersion()
+  };
+}
+
+async function checkForPortableUpdates(showErrors: boolean): Promise<UpdateStatus> {
+  portableUpdateAsset = null;
+  publishUpdateStatus({ state: 'checking', message: 'Checking for portable updates.' });
+
+  try {
+    const response = await fetchWithTimeout(
+      GITHUB_LATEST_RELEASE_URL,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': `${PRODUCT_NAME}/${app.getVersion()}`
+        }
+      },
+      12000
+    );
+    if (!response.ok) {
+      throw new Error(`GitHub update check failed: HTTP ${response.status}`);
+    }
+
+    const release = (await response.json()) as GitHubRelease;
+    const asset = findPortableReleaseAsset(release);
+    if (!asset?.browser_download_url || !asset.name) {
+      return publishUpdateStatus({ state: 'not-available', message: 'No portable update asset was found in the latest release.' });
+    }
+
+    const latestVersion = normalizeVersion(versionFromPortableAssetName(asset.name) || release.tag_name || release.name);
+    if (!latestVersion) {
+      throw new Error('Could not read the latest portable update version.');
+    }
+
+    if (compareVersions(latestVersion, app.getVersion()) <= 0) {
+      return publishUpdateStatus({ state: 'not-available', version: latestVersion, message: 'LocalPersona portable is up to date.' });
+    }
+
+    portableUpdateAsset = {
+      version: latestVersion,
+      fileName: asset.name,
+      downloadUrl: asset.browser_download_url,
+      size: asset.size
+    };
+
+    return publishUpdateStatus({
+      state: 'available',
+      version: latestVersion,
+      message: `LocalPersona ${latestVersion} portable update is available.`
+    });
+  } catch (error) {
+    if (showErrors) {
+      return publishUpdateStatus({ state: 'error', message: stringifyError(error) });
+    }
+    return publishUpdateStatus({ state: 'idle' });
+  }
+}
+
+async function downloadPortableUpdate(): Promise<UpdateStatus> {
+  if (!portableUpdateAsset) {
+    await checkForPortableUpdates(true);
+  }
+
+  if (!portableUpdateAsset) {
+    return publishUpdateStatus({ state: 'not-available', message: 'No portable update is available.' });
+  }
+
+  const asset = portableUpdateAsset;
+  const updateDir = path.join(app.getPath('userData'), 'updates');
+  const targetPath = path.join(updateDir, asset.fileName);
+  const tempPath = `${targetPath}.download`;
+
+  try {
+    await fs.mkdir(updateDir, { recursive: true });
+    await fs.rm(tempPath, { force: true });
+    await fs.rm(targetPath, { force: true });
+
+    publishUpdateStatus({ state: 'downloading', version: asset.version, percent: 0, message: 'Starting portable update download.' });
+
+    const response = await fetch(asset.downloadUrl, {
+      headers: {
+        Accept: 'application/octet-stream',
+        'User-Agent': `${PRODUCT_NAME}/${app.getVersion()}`
+      }
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Portable update download failed: HTTP ${response.status}`);
+    }
+
+    const total = Number(response.headers.get('content-length')) || asset.size || 0;
+    const reader = response.body.getReader();
+    const file = await fs.open(tempPath, 'w');
+    let downloaded = 0;
+    let lastPercent = -1;
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (!value) {
+          continue;
+        }
+        const chunk = Buffer.from(value);
+        await file.write(chunk);
+        downloaded += chunk.length;
+        if (total > 0) {
+          const percent = Math.min(100, Math.round((downloaded / total) * 100));
+          if (percent !== lastPercent) {
+            lastPercent = percent;
+            publishUpdateStatus({
+              state: 'downloading',
+              version: asset.version,
+              percent,
+              message: `Downloading portable update ${percent}%.`
+            });
+          }
+        }
+      }
+    } finally {
+      await file.close();
+    }
+
+    await fs.rename(tempPath, targetPath);
+    portableUpdateAsset = { ...asset, downloadedPath: targetPath };
+    return publishUpdateStatus({
+      state: 'downloaded',
+      version: asset.version,
+      message: `LocalPersona ${asset.version} portable update is ready to install.`
+    });
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    return publishUpdateStatus({ state: 'error', message: stringifyError(error) });
+  }
+}
+
+async function installPortableUpdate(): Promise<UpdateStatus> {
+  const asset = portableUpdateAsset;
+  const sourcePath = asset?.downloadedPath;
+  const portableExecutable = getPortableExecutablePath();
+  if (!asset || !sourcePath || !portableExecutable) {
+    return publishUpdateStatus({ state: 'error', message: 'Portable update is not ready to install.' });
+  }
+
+  const scriptPath = path.join(app.getPath('temp'), `localpersona-portable-update-${Date.now()}.ps1`);
+  await fs.writeFile(scriptPath, buildPortableInstallScript(sourcePath, portableExecutable, process.pid, process.ppid), 'utf8');
+
+  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true
+  });
+  child.unref();
+
+  const status = publishUpdateStatus({
+    state: 'downloaded',
+    version: asset.version,
+    message: 'Installing portable update.'
+  });
+  setTimeout(() => app.quit(), 250);
+  return status;
+}
+
+function buildPortableInstallScript(sourcePath: string, targetPath: string, currentPid: number, launcherPid: number) {
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$source = ${powershellString(sourcePath)}`,
+    `$target = ${powershellString(targetPath)}`,
+    `$currentPid = ${currentPid}`,
+    `$launcherPid = ${launcherPid}`,
+    'Wait-Process -Id $currentPid -Timeout 30 -ErrorAction SilentlyContinue',
+    'Wait-Process -Id $launcherPid -Timeout 30 -ErrorAction SilentlyContinue',
+    "$ErrorActionPreference = 'Stop'",
+    'for ($attempt = 0; $attempt -lt 90; $attempt++) {',
+    '  try {',
+    '    Copy-Item -LiteralPath $source -Destination $target -Force',
+    '    Start-Process -FilePath $target',
+    '    Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue',
+    '    break',
+    '  } catch {',
+    '    Start-Sleep -Milliseconds 500',
+    '  }',
+    '}',
+    'Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue'
+  ].join('\r\n');
+}
+
+function findPortableReleaseAsset(release: GitHubRelease) {
+  const artifactArch = getArtifactArch();
+  const portableAssetPattern = new RegExp(`^${escapeRegex(PRODUCT_NAME)}-Portable-(.+)-(x64|arm64|ia32)\\.exe$`, 'i');
+  const assets = (release.assets ?? []).filter(
+    (asset) => asset.name && asset.browser_download_url && asset.state !== 'deleted' && portableAssetPattern.test(asset.name)
+  );
+  return assets.find((asset) => asset.name?.toLowerCase().endsWith(`-${artifactArch}.exe`)) ?? assets[0];
+}
+
+function versionFromPortableAssetName(fileName: string) {
+  const pattern = new RegExp(`^${escapeRegex(PRODUCT_NAME)}-Portable-(.+)-(?:x64|arm64|ia32)\\.exe$`, 'i');
+  return fileName.match(pattern)?.[1];
+}
+
+function normalizeVersion(value?: string) {
+  return value?.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/)?.[0] ?? '';
+}
+
+function compareVersions(left: string, right: string) {
+  const [leftCore, leftPre = ''] = left.split('+')[0].split('-', 2);
+  const [rightCore, rightPre = ''] = right.split('+')[0].split('-', 2);
+  const leftParts = leftCore.split('.').map((part) => Number(part) || 0);
+  const rightParts = rightCore.split('.').map((part) => Number(part) || 0);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+  if (leftPre && !rightPre) {
+    return -1;
+  }
+  if (!leftPre && rightPre) {
+    return 1;
+  }
+  return leftPre.localeCompare(rightPre);
+}
+
+function getArtifactArch() {
+  if (process.arch === 'arm64') {
+    return 'arm64';
+  }
+  if (process.arch === 'ia32') {
+    return 'ia32';
+  }
+  return 'x64';
+}
+
+function getUpdatePackageKind(): UpdatePackageKind {
+  if (!app.isPackaged) {
+    return 'development';
+  }
+  if (process.platform === 'win32' && getPortableExecutablePath()) {
+    return 'portable';
+  }
+  return 'installer';
+}
+
+function getPortableExecutablePath() {
+  const portableExecutable = process.env.PORTABLE_EXECUTABLE_FILE;
+  return portableExecutable && path.isAbsolute(portableExecutable) ? portableExecutable : undefined;
+}
+
+function powershellString(value: string) {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 function normalizeCharacter(input: Partial<CharacterProfile>, fallbackPromptMode: PromptMode = 'roleplay'): CharacterProfile {

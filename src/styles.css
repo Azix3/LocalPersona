@@ -570,6 +570,10 @@ textarea::placeholder {
   font-size: 13px;
 }
 
+.update-control {
+  white-space: nowrap;
+}
+
 .jump-last-button {
   position: absolute;
   right: 28px;
