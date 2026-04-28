@@ -709,12 +709,16 @@ async function downloadPortableUpdate(): Promise<UpdateStatus> {
   }
 
   const asset = portableUpdateAsset;
-  const updateDir = path.join(app.getPath('userData'), 'updates');
-  const targetPath = path.join(updateDir, asset.fileName);
+  const portableExecutable = getPortableExecutablePath();
+  if (!portableExecutable) {
+    return publishUpdateStatus({ state: 'error', message: 'Portable update path could not be found.' });
+  }
+
+  const updateDir = path.dirname(portableExecutable);
+  const targetPath = path.join(updateDir, path.basename(asset.fileName));
   const tempPath = `${targetPath}.download`;
 
   try {
-    await fs.mkdir(updateDir, { recursive: true });
     await fs.rm(tempPath, { force: true });
     await fs.rm(targetPath, { force: true });
 
@@ -770,7 +774,7 @@ async function downloadPortableUpdate(): Promise<UpdateStatus> {
     return publishUpdateStatus({
       state: 'downloaded',
       version: asset.version,
-      message: `LocalPersona ${asset.version} portable update is ready to install.`
+      message: `Downloaded portable update to ${targetPath}.`
     });
   } catch (error) {
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
@@ -780,14 +784,13 @@ async function downloadPortableUpdate(): Promise<UpdateStatus> {
 
 async function installPortableUpdate(): Promise<UpdateStatus> {
   const asset = portableUpdateAsset;
-  const sourcePath = asset?.downloadedPath;
-  const portableExecutable = getPortableExecutablePath();
-  if (!asset || !sourcePath || !portableExecutable) {
-    return publishUpdateStatus({ state: 'error', message: 'Portable update is not ready to install.' });
+  const updatePath = asset?.downloadedPath;
+  if (!asset || !updatePath) {
+    return publishUpdateStatus({ state: 'error', message: 'Portable update is not ready to open.' });
   }
 
   const scriptPath = path.join(app.getPath('temp'), `localpersona-portable-update-${Date.now()}.ps1`);
-  await fs.writeFile(scriptPath, buildPortableInstallScript(sourcePath, portableExecutable, process.pid, process.ppid), 'utf8');
+  await fs.writeFile(scriptPath, buildPortableLaunchScript(updatePath, process.pid, process.ppid), 'utf8');
 
   const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
     detached: true,
@@ -799,27 +802,24 @@ async function installPortableUpdate(): Promise<UpdateStatus> {
   const status = publishUpdateStatus({
     state: 'downloaded',
     version: asset.version,
-    message: 'Installing portable update.'
+    message: `Opening portable update from ${updatePath}.`
   });
   setTimeout(() => app.quit(), 250);
   return status;
 }
 
-function buildPortableInstallScript(sourcePath: string, targetPath: string, currentPid: number, launcherPid: number) {
+function buildPortableLaunchScript(updatePath: string, currentPid: number, launcherPid: number) {
   return [
     "$ErrorActionPreference = 'SilentlyContinue'",
-    `$source = ${powershellString(sourcePath)}`,
-    `$target = ${powershellString(targetPath)}`,
+    `$update = ${powershellString(updatePath)}`,
     `$currentPid = ${currentPid}`,
     `$launcherPid = ${launcherPid}`,
     'Wait-Process -Id $currentPid -Timeout 30 -ErrorAction SilentlyContinue',
     'Wait-Process -Id $launcherPid -Timeout 30 -ErrorAction SilentlyContinue',
     "$ErrorActionPreference = 'Stop'",
-    'for ($attempt = 0; $attempt -lt 90; $attempt++) {',
+    'for ($attempt = 0; $attempt -lt 60; $attempt++) {',
     '  try {',
-    '    Copy-Item -LiteralPath $source -Destination $target -Force',
-    '    Start-Process -FilePath $target',
-    '    Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue',
+    '    Start-Process -FilePath $update',
     '    break',
     '  } catch {',
     '    Start-Sleep -Milliseconds 500',

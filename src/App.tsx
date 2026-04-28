@@ -1120,10 +1120,11 @@ function UpdateControl({
   }
 
   if (status.state === 'downloaded') {
+    const label = status.packageKind === 'portable' ? 'open update' : 'restart';
     return (
       <button className="text-button update-control downloaded" title={title} onClick={onInstall}>
         <RefreshCw size={17} />
-        restart
+        {label}
       </button>
     );
   }
