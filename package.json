@@ -1,0 +1,78 @@
+{
+  "name": "localpersona",
+  "version": "0.1.18",
+  "private": true,
+  "description": "A local persona chat frontend for Ollama.",
+  "author": "Aroon",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Azix3/LocalPersona.git"
+  },
+  "homepage": "https://github.com/Azix3/LocalPersona",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "vite build && tsc -p tsconfig.electron.json",
+    "clean:release": "node -e \"require('fs').rmSync('release',{recursive:true,force:true})\"",
+    "dist": "npm run clean:release && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis portable",
+    "publish:github": "npm run clean:release && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis portable --publish always",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.4",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
+    "lucide-react": "^0.475.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.11",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "local.localpersona",
+    "productName": "LocalPersona",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}-${arch}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Azix3",
+        "repo": "LocalPersona",
+        "releaseType": "release"
+      }
+    ]
+  }
+}
