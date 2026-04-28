@@ -288,17 +288,24 @@ function normalizeStore(value: unknown): AppStore {
   const legacyPromptMode = normalizePromptMode((input as { promptMode?: unknown }).promptMode);
   const sourceCharacters = Array.isArray(input.characters) && input.characters.length > 0 ? input.characters : seedCharacters;
   const characters = sourceCharacters.map((character) => normalizeCharacter(character, legacyPromptMode));
-  const sessions = Array.isArray(input.sessions) ? input.sessions : [];
+  const sessions = Array.isArray(input.sessions) ? input.sessions.map((session) => normalizeSession(session)) : [];
   const selectedCharacterId =
     input.selectedCharacterId && characters.some((character) => character.id === input.selectedCharacterId)
       ? input.selectedCharacterId
       : characters[0]?.id;
+  const selectedSessionId =
+    typeof input.selectedSessionId === 'string' &&
+    sessions.some((session) => session.id === input.selectedSessionId && session.characterId === selectedCharacterId)
+      ? input.selectedSessionId
+      : getLatestSessionForCharacter(sessions, selectedCharacterId)?.id;
 
   return {
     version: STORE_VERSION,
     characters,
     sessions,
+    userName: cleanUserName(input.userName),
     selectedCharacterId,
+    selectedSessionId,
     selectedModel: typeof input.selectedModel === 'string' ? input.selectedModel : undefined
   };
 }
@@ -319,6 +326,7 @@ function registerIpc() {
     const character: CharacterProfile = {
       id: input.id || randomUUID(),
       name: String(input.name || 'New Character').trim(),
+      userName: cleanUserName(input.userName),
       subtitle: String(input.subtitle || '').trim(),
       description: String(input.description || '').trim(),
       systemPrompt: String(input.systemPrompt || '').trim(),
@@ -337,6 +345,7 @@ function registerIpc() {
     } else {
       store.characters.unshift(character);
       store.selectedCharacterId = character.id;
+      delete store.selectedSessionId;
     }
 
     await writeStore(store);
@@ -349,6 +358,9 @@ function registerIpc() {
     store.sessions = store.sessions.filter((session) => session.characterId !== characterId);
     if (store.selectedCharacterId === characterId) {
       store.selectedCharacterId = store.characters[0]?.id;
+      store.selectedSessionId = getLatestSessionForCharacter(store.sessions, store.selectedCharacterId)?.id;
+    } else if (store.selectedSessionId && !store.sessions.some((session) => session.id === store.selectedSessionId)) {
+      delete store.selectedSessionId;
     }
     await writeStore(store);
     return store;
@@ -369,6 +381,7 @@ function registerIpc() {
       store.sessions.unshift(cleanSession);
     }
     store.selectedCharacterId = cleanSession.characterId;
+    store.selectedSessionId = cleanSession.id;
     store.selectedModel = cleanSession.model || store.selectedModel;
     await writeStore(store);
     return store;
@@ -377,6 +390,9 @@ function registerIpc() {
   ipcMain.handle('sessions:delete', async (_event, sessionId: string) => {
     const store = await readStore();
     store.sessions = store.sessions.filter((session) => session.id !== sessionId);
+    if (store.selectedSessionId === sessionId) {
+      store.selectedSessionId = getLatestSessionForCharacter(store.sessions, store.selectedCharacterId)?.id;
+    }
     await writeStore(store);
     return store;
   });
@@ -385,9 +401,29 @@ function registerIpc() {
     const store = await readStore();
     if (typeof settings.selectedCharacterId === 'string') {
       store.selectedCharacterId = settings.selectedCharacterId;
+      const selectedSession = store.selectedSessionId ? store.sessions.find((session) => session.id === store.selectedSessionId) : undefined;
+      if (selectedSession?.characterId !== store.selectedCharacterId) {
+        store.selectedSessionId = getLatestSessionForCharacter(store.sessions, store.selectedCharacterId)?.id;
+      }
+    }
+    if ('selectedSessionId' in settings) {
+      const selectedSession =
+        typeof settings.selectedSessionId === 'string'
+          ? store.sessions.find((session) => session.id === settings.selectedSessionId)
+          : undefined;
+      if (selectedSession) {
+        store.selectedSessionId = selectedSession.id;
+        store.selectedCharacterId = selectedSession.characterId;
+        store.selectedModel = selectedSession.model || store.selectedModel;
+      } else {
+        delete store.selectedSessionId;
+      }
     }
     if (typeof settings.selectedModel === 'string') {
       store.selectedModel = settings.selectedModel;
+    }
+    if ('userName' in settings) {
+      store.userName = cleanUserName(settings.userName);
     }
     await writeStore(store);
     return store;
@@ -411,7 +447,9 @@ function registerIpc() {
       version: STORE_VERSION,
       characters: store.characters,
       sessions: store.sessions,
+      userName: store.userName,
       selectedCharacterId: store.selectedCharacterId,
+      selectedSessionId: store.selectedSessionId,
       selectedModel: store.selectedModel
     };
     await fs.writeFile(result.filePath, JSON.stringify(payload, null, 2), 'utf8');
@@ -452,8 +490,21 @@ function registerIpc() {
 
     store.characters = Array.from(characterMap.values());
     store.sessions = Array.from(sessionMap.values());
+    if ('userName' in imported) {
+      store.userName = cleanUserName(imported.userName);
+    }
     if (typeof imported.selectedCharacterId === 'string') {
       store.selectedCharacterId = imported.selectedCharacterId;
+    }
+    const importedSelectedSession =
+      typeof imported.selectedSessionId === 'string'
+        ? store.sessions.find((session) => session.id === imported.selectedSessionId)
+        : undefined;
+    if (importedSelectedSession) {
+      store.selectedSessionId = importedSelectedSession.id;
+      store.selectedCharacterId = importedSelectedSession.characterId;
+    } else {
+      store.selectedSessionId = getLatestSessionForCharacter(store.sessions, store.selectedCharacterId)?.id;
     }
     if (typeof imported.selectedModel === 'string') {
       store.selectedModel = imported.selectedModel;
@@ -850,6 +901,7 @@ function normalizeCharacter(input: Partial<CharacterProfile>, fallbackPromptMode
   return {
     id: String(input.id || randomUUID()),
     name: String(input.name || 'Imported Character'),
+    userName: cleanUserName(input.userName),
     subtitle: String(input.subtitle || ''),
     description: String(input.description || ''),
     systemPrompt: String(input.systemPrompt || ''),
@@ -861,6 +913,15 @@ function normalizeCharacter(input: Partial<CharacterProfile>, fallbackPromptMode
     createdAt: input.createdAt || now,
     updatedAt: input.updatedAt || now
   };
+}
+
+function getLatestSessionForCharacter(sessions: ChatSession[], characterId?: string) {
+  if (!characterId) {
+    return undefined;
+  }
+  return sessions
+    .filter((session) => session.characterId === characterId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 }
 
 function normalizeSession(input: Partial<ChatSession>): ChatSession {
@@ -884,6 +945,10 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 
 function normalizePromptMode(value: unknown): PromptMode {
   return value === 'assistant' ? 'assistant' : 'roleplay';
+}
+
+function cleanUserName(value: unknown) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
 async function getOllamaStatus(): Promise<OllamaStatus> {
@@ -1160,8 +1225,8 @@ async function sendChat(payload: ChatPayload): Promise<{ content: string }> {
   const promptMode = normalizePromptMode(payload.promptMode);
   const systemPrompt =
     promptMode === 'assistant'
-      ? buildAssistantSystemPrompt(payload.systemPrompt, payload.messages)
-      : buildRoleplaySystemPrompt(payload.systemPrompt, payload.messages);
+      ? buildAssistantSystemPrompt(payload.systemPrompt, payload.messages, payload.userName)
+      : buildRoleplaySystemPrompt(payload.systemPrompt, payload.messages, payload.userName);
   const messages = [
     { role: 'system', content: systemPrompt },
     ...payload.messages.map((message) => ({ role: message.role, content: message.content }))
@@ -1219,11 +1284,15 @@ function cancelChat(requestId: string) {
   return true;
 }
 
-function buildRoleplaySystemPrompt(characterPrompt: string, messages: ChatMessage[]) {
+function buildRoleplaySystemPrompt(characterPrompt: string, messages: ChatMessage[], userName?: string) {
   const prompt = characterPrompt.trim();
+  const userNameGuide = buildUserNameGuide(userName, 'roleplay');
   const userStyle = buildUserStyleGuide(messages);
   const roleBoundary = buildLatestTurnRoleBoundary(messages);
   const sections = [HIDDEN_ROLEPLAY_PROMPT, prompt || 'No character card was provided. Infer a consistent roleplay character from the conversation.'];
+  if (userNameGuide) {
+    sections.push(userNameGuide);
+  }
   if (userStyle) {
     sections.push(userStyle);
   }
@@ -1233,14 +1302,32 @@ function buildRoleplaySystemPrompt(characterPrompt: string, messages: ChatMessag
   return sections.join('\n\n');
 }
 
-function buildAssistantSystemPrompt(characterPrompt: string, messages: ChatMessage[]) {
+function buildAssistantSystemPrompt(characterPrompt: string, messages: ChatMessage[], userName?: string) {
   const prompt = characterPrompt.trim();
+  const userNameGuide = buildUserNameGuide(userName, 'assistant');
   const userStyle = buildAssistantStyleGuide(messages);
   const sections = [HIDDEN_ASSISTANT_PROMPT, prompt || 'No extra assistant instructions were provided.'];
+  if (userNameGuide) {
+    sections.push(userNameGuide);
+  }
   if (userStyle) {
     sections.push(userStyle);
   }
   return sections.join('\n\n');
+}
+
+function buildUserNameGuide(userName: string | undefined, mode: PromptMode) {
+  const cleanName = cleanUserName(userName);
+  if (!cleanName) {
+    return '';
+  }
+
+  const usage =
+    mode === 'assistant'
+      ? 'Use this name when addressing the user directly, but do not force it into every reply.'
+      : 'The character can know and use this name when it fits the relationship and scene, but should not force it into every reply.';
+
+  return ['User profile, hidden:', `- The user's preferred name is ${JSON.stringify(cleanName)}.`, `- ${usage}`].join('\n');
 }
 
 function buildUserStyleGuide(messages: ChatMessage[]) {

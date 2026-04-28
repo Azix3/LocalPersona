@@ -49,6 +49,7 @@ const THEME_STORAGE_KEY = 'localpersona-theme';
 function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => loadTheme());
   const [store, setStore] = useState<AppStore | null>(null);
+  const [globalUserNameDraft, setGlobalUserNameDraft] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [localModels, setLocalModels] = useState<LocalModel[]>([]);
   const [libraryModels, setLibraryModels] = useState<LibraryModel[]>([]);
@@ -119,6 +120,25 @@ function App() {
     void boot();
   }, []);
 
+  useEffect(() => {
+    setGlobalUserNameDraft(store?.userName ?? '');
+  }, [store?.userName]);
+
+  useEffect(() => {
+    if (!store) {
+      return;
+    }
+    const cleanName = cleanUserName(globalUserNameDraft);
+    if (cleanName === (store.userName ?? '')) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void saveGlobalUserName(cleanName);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [globalUserNameDraft, store?.userName]);
+
   const activeCharacter = useMemo(() => {
     if (!store) {
       return undefined;
@@ -130,12 +150,15 @@ function App() {
     if (!store || !activeCharacter) {
       return undefined;
     }
-    return store.sessions
-      .filter((session) => session.characterId === activeCharacter.id)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    const selectedSession = store.selectedSessionId
+      ? store.sessions.find((session) => session.id === store.selectedSessionId && session.characterId === activeCharacter.id)
+      : undefined;
+    return selectedSession ?? getLatestSessionForCharacter(store.sessions, activeCharacter.id);
   }, [activeCharacter, store]);
 
   const selectedModel = store?.selectedModel || localModels[0]?.name || '';
+  const effectiveUserName = getEffectiveUserName(store, activeCharacter);
+  const displayUserName = effectiveUserName || 'You';
 
   const filteredCharacters = useMemo(() => {
     if (!store) {
@@ -183,6 +206,23 @@ function App() {
     const frame = window.requestAnimationFrame(() => scrollToLastMessage(streaming ? 'auto' : 'smooth'));
     return () => window.cancelAnimationFrame(frame);
   }, [latestMessageKey, streaming]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || editorDraft) {
+        return;
+      }
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+        return;
+      }
+
+      event.preventDefault();
+      void switchChat(event.key === 'ArrowDown' ? 1 : -1);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeSession?.id, editorDraft, store, streaming]);
 
   async function boot() {
     setBusy(true);
@@ -238,6 +278,20 @@ function App() {
     });
   }
 
+  async function saveGlobalUserName(userName: string) {
+    if (!store) {
+      return;
+    }
+
+    const cleanName = cleanUserName(userName);
+    setStore({ ...store, userName: cleanName });
+    try {
+      setStore(await window.localAI.updateSettings({ userName: cleanName }));
+    } catch (error) {
+      setNotice(errorMessage(error));
+    }
+  }
+
   async function checkForUpdates() {
     setUpdateStatus((previous) => ({ ...previous, state: 'checking', message: 'Checking for updates.' }));
     try {
@@ -268,7 +322,8 @@ function App() {
     if (!store) {
       return;
     }
-    setStore(await window.localAI.updateSettings({ selectedCharacterId: characterId }));
+    const nextSession = getLatestSessionForCharacter(store.sessions, characterId);
+    setStore(await window.localAI.updateSettings({ selectedCharacterId: characterId, selectedSessionId: nextSession?.id ?? '' }));
   }
 
   async function selectModel(model: string) {
@@ -280,6 +335,32 @@ function App() {
       return;
     }
     setStore(await window.localAI.updateSettings({ selectedModel: model }));
+  }
+
+  async function switchChat(direction: -1 | 1) {
+    if (!store) {
+      return;
+    }
+    if (streaming) {
+      setNotice('Wait for the current response to finish before switching chats.');
+      return;
+    }
+
+    const sessions = getOrderedSessions(store.sessions);
+    if (sessions.length < 2) {
+      return;
+    }
+
+    const currentId = activeSession?.id ?? store.selectedSessionId;
+    const currentIndex = Math.max(0, sessions.findIndex((session) => session.id === currentId));
+    const nextSession = sessions[wrapIndex(currentIndex + direction, sessions.length)];
+    setStore(
+      await window.localAI.updateSettings({
+        selectedCharacterId: nextSession.characterId,
+        selectedSessionId: nextSession.id,
+        selectedModel: nextSession.model || store.selectedModel
+      })
+    );
   }
 
   async function saveCharacter(character: Partial<CharacterProfile>) {
@@ -371,6 +452,7 @@ function App() {
         requestId,
         model: selectedModel,
         systemPrompt: activeCharacter.systemPrompt,
+        userName: effectiveUserName,
         messages: [...baseMessages, userMessage],
         temperature: activeCharacter.temperature,
         promptMode
@@ -437,6 +519,7 @@ function App() {
         requestId,
         model: selectedModel,
         systemPrompt: activeCharacter.systemPrompt,
+        userName: effectiveUserName,
         messages: contextMessages,
         temperature: activeCharacter.temperature,
         promptMode
@@ -578,6 +661,25 @@ function App() {
             </button>
           </div>
 
+          <label className="user-name-card">
+            <span>
+              <UserRound size={17} />
+              Your name
+            </span>
+            <input
+              value={globalUserNameDraft}
+              maxLength={80}
+              onChange={(event) => setGlobalUserNameDraft(event.target.value)}
+              onBlur={() => saveGlobalUserName(globalUserNameDraft)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.currentTarget.blur();
+                }
+              }}
+              placeholder="What characters call you"
+            />
+          </label>
+
           <label className="search-box">
             <Search size={17} />
             <input value={characterQuery} onChange={(event) => setCharacterQuery(event.target.value)} placeholder="Search characters" />
@@ -633,7 +735,7 @@ function App() {
               return (
                 <article key={message.id} className={`message ${message.role}`}>
                   <div className="message-meta">
-                    <span>{message.role === 'user' ? 'You' : activeCharacter?.name}</span>
+                    <span>{message.role === 'user' ? displayUserName : activeCharacter?.name}</span>
                     {canUseAssistantControls ? (
                       <div className="message-controls">
                         {hasVersions ? <small>{versionIndex + 1}/{versions.length}</small> : null}
@@ -844,7 +946,13 @@ function App() {
       </div>
 
       {editorDraft ? (
-        <CharacterEditor draft={editorDraft} onClose={() => setEditorDraft(null)} onSave={saveCharacter} onDelete={deleteCharacter} />
+        <CharacterEditor
+          draft={editorDraft}
+          globalUserName={store.userName}
+          onClose={() => setEditorDraft(null)}
+          onSave={saveCharacter}
+          onDelete={deleteCharacter}
+        />
       ) : null}
     </div>
   );
@@ -852,11 +960,13 @@ function App() {
 
 function CharacterEditor({
   draft,
+  globalUserName,
   onClose,
   onSave,
   onDelete
 }: {
   draft: EditorDraft;
+  globalUserName?: string;
   onClose: () => void;
   onSave: (character: Partial<CharacterProfile>) => Promise<void>;
   onDelete: (characterId: string) => Promise<boolean>;
@@ -886,6 +996,15 @@ function CharacterEditor({
           <label>
             Name
             <input value={form.name || ''} onChange={(event) => update('name', event.target.value)} />
+          </label>
+          <label>
+            Your name
+            <input
+              value={form.userName || ''}
+              maxLength={80}
+              onChange={(event) => update('userName', event.target.value)}
+              placeholder={globalUserName ? `Uses ${globalUserName}` : 'Uses global name'}
+            />
           </label>
           <label>
             Subtitle
@@ -1096,6 +1215,7 @@ function ProgressLine({ progress }: { progress: PullProgress }) {
 function createCharacterDraft(): EditorDraft {
   return {
     name: '',
+    userName: '',
     subtitle: '',
     description: '',
     systemPrompt: '',
@@ -1184,6 +1304,7 @@ function upsertSessionInStore(store: AppStore, session: ChatSession): AppStore {
   return {
     ...store,
     selectedCharacterId: session.characterId,
+    selectedSessionId: session.id,
     selectedModel: session.model,
     sessions: exists ? store.sessions.map((item) => (item.id === session.id ? session : item)) : [session, ...store.sessions]
   };
@@ -1194,6 +1315,29 @@ function updateSessionInStore(store: AppStore, sessionId: string, updater: (sess
     ...store,
     sessions: store.sessions.map((session) => (session.id === sessionId ? updater(session) : session))
   };
+}
+
+function getOrderedSessions(sessions: ChatSession[]) {
+  return [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function getLatestSessionForCharacter(sessions: ChatSession[], characterId?: string) {
+  if (!characterId) {
+    return undefined;
+  }
+  return getOrderedSessions(sessions).find((session) => session.characterId === characterId);
+}
+
+function wrapIndex(index: number, length: number) {
+  return ((index % length) + length) % length;
+}
+
+function getEffectiveUserName(store: AppStore | null, character?: CharacterProfile) {
+  return cleanUserName(character?.userName || store?.userName || '');
+}
+
+function cleanUserName(value: string) {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
 function isLibraryModelInstalled(name: string, localModelNames: Set<string>) {

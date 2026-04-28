@@ -4,6 +4,7 @@ export type PromptMode = 'roleplay' | 'assistant';
 export type CharacterProfile = {
   id: string;
   name: string;
+  userName?: string;
   subtitle: string;
   description: string;
   systemPrompt: string;
@@ -38,7 +39,9 @@ export type AppStore = {
   version: number;
   characters: CharacterProfile[];
   sessions: ChatSession[];
+  userName?: string;
   selectedCharacterId?: string;
+  selectedSessionId?: string;
   selectedModel?: string;
 };
 
@@ -86,6 +89,7 @@ export type ChatPayload = {
   requestId: string;
   model: string;
   systemPrompt: string;
+  userName?: string;
   messages: ChatMessage[];
   temperature: number;
   promptMode?: PromptMode;

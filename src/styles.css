@@ -242,6 +242,7 @@ textarea:disabled {
 }
 
 .search-box input,
+.user-name-card input,
 .custom-pull input,
 .editor-grid input,
 .editor-grid textarea,
@@ -258,6 +259,33 @@ textarea:disabled {
 input::placeholder,
 textarea::placeholder {
   color: var(--subtle);
+}
+
+.user-name-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.user-name-card span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.user-name-card input {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--text);
 }
 
 .character-list,

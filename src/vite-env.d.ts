@@ -24,7 +24,7 @@ declare global {
       deleteCharacter: (characterId: string) => Promise<AppStore>;
       saveSession: (session: ChatSession) => Promise<AppStore>;
       deleteSession: (sessionId: string) => Promise<AppStore>;
-      updateSettings: (settings: Partial<Pick<AppStore, 'selectedCharacterId' | 'selectedModel'>>) => Promise<AppStore>;
+      updateSettings: (settings: Partial<Pick<AppStore, 'selectedCharacterId' | 'selectedSessionId' | 'selectedModel' | 'userName'>>) => Promise<AppStore>;
       exportStore: () => Promise<{ path?: string; canceled: boolean }>;
       importStore: () => Promise<ImportResult & { store?: AppStore }>;
       getOllamaStatus: () => Promise<OllamaStatus>;
