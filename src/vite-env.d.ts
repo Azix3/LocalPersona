@@ -17,6 +17,8 @@ import type {
 type Unsubscribe = () => void;
 
 declare global {
+  const __APP_VERSION__: string;
+
   interface Window {
     localAI: {
       loadStore: () => Promise<AppStore>;

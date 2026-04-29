@@ -3,7 +3,9 @@
   "version": "0.1.21",
   "private": true,
   "description": "A local persona chat frontend for Ollama.",
-  "author": "Aroon",
+  "author": {
+    "name": "Azi"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/Azix3/LocalPersona.git"
@@ -40,6 +42,7 @@
   "build": {
     "appId": "local.localpersona",
     "productName": "LocalPersona",
+    "copyright": "Copyright © 2026 Azi",
     "directories": {
       "output": "release"
     },

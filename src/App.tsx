@@ -45,6 +45,7 @@ type ThemeMode = 'dark' | 'light';
 
 const avatarColors = ['#1f7a70', '#5750c9', '#c15a32', '#2f6fae', '#8a5a16', '#7b3f75', '#4e6b31', '#b9434a'];
 const THEME_STORAGE_KEY = 'localpersona-theme';
+const APP_VERSION = __APP_VERSION__;
 
 function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => loadTheme());
@@ -624,9 +625,12 @@ function App() {
       <header className="topbar">
         <div className="brand">
           <Bot size={24} />
-          <div>
-            <strong>LocalPersona</strong>
-            <span>Local AI personas</span>
+          <div className="brand-copy">
+            <span className="brand-title-line">
+              <strong>LocalPersona</strong>
+              <span className="app-version">v{APP_VERSION}</span>
+            </span>
+            <span className="brand-subtitle">Local AI personas</span>
           </div>
         </div>
         <div className="topbar-actions">

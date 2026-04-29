@@ -137,9 +137,17 @@ textarea:disabled {
   color: var(--accent);
 }
 
-.brand div {
+.brand-copy {
   display: grid;
   gap: 2px;
+  min-width: 0;
+}
+
+.brand-title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
 }
 
 .brand strong {
@@ -147,7 +155,15 @@ textarea:disabled {
   line-height: 1.15;
 }
 
-.brand span {
+.app-version {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.brand-subtitle {
   color: var(--muted);
   font-size: 13px;
 }
