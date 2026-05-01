@@ -1,3 +1,6 @@
+Ever wanted an AI assistant, or a chatbot to roleplay with to pass the time. but you dont want to waste tons of electricity, take 100's of peoples jobs, do ireperable damage to the world, and get more money in the pockets of tech billionares? this app makes it incredibly easy to run your own AI model on your own device without your data or your chats being stored ANYWHERE but on your own device, this will work even offline!
+
+
 # LocalPersona
 
 A Windows-friendly Electron app for local character chat with Ollama.
