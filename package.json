@@ -1,6 +1,6 @@
 {
   "name": "localpersona",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "description": "A local persona chat frontend for Ollama.",
   "author": {
@@ -17,11 +17,20 @@
     "build": "vite build && tsc -p tsconfig.electron.json",
     "clean:release": "node -e \"require('fs').rmSync('release',{recursive:true,force:true})\"",
     "dist": "npm run clean:release && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis portable",
-    "publish:github": "npm run clean:release && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis portable --publish always",
+    "fix:deb": "node scripts/fix-deb-line-endings.cjs",
+    "dist:linux": "npm run clean:release && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux deb tar.gz && npm run fix:deb",
+    "dist:all": "npm run clean:release && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis portable --linux deb tar.gz && npm run fix:deb",
+    "publish:github": "npm run dist:all && node scripts/publish-github-release.cjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit"
   },
   "dependencies": {
-    "electron-updater": "^6.8.3"
+    "@huggingface/transformers": "^3.8.1",
+    "electron-updater": "^6.8.3",
+    "kokoro-js": "^1.2.1",
+    "vosk-browser": "^0.0.8"
+  },
+  "overrides": {
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
@@ -43,6 +52,8 @@
     "appId": "local.localpersona",
     "productName": "LocalPersona",
     "copyright": "Copyright © 2026 Azi",
+    "afterPack": "scripts/patch-linux-launcher.cjs",
+    "afterAllArtifactBuild": "scripts/fix-deb-line-endings.cjs",
     "directories": {
       "output": "release"
     },
@@ -68,6 +79,30 @@
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "deb",
+        "tar.gz"
+      ],
+      "maintainer": "Azi <Azix3@users.noreply.github.com>",
+      "category": "Utility",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "deb": {
+      "afterInstall": "build/linux/after-install.tpl",
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "curl"
+      ]
     },
     "publish": [
       {

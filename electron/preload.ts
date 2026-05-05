@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { ChatToken, PullProgress, UpdateStatus } from '../src/types';
+import type { ChatToken, LocalSpeechRecognitionEvent, PullProgress, UpdateStatus } from '../src/types';
 
 function subscribe<T>(channel: string, callback: (payload: T) => void) {
   const listener = (_event: Electron.IpcRendererEvent, payload: T) => callback(payload);
@@ -24,6 +24,13 @@ contextBridge.exposeInMainWorld('localAI', {
   pullModel: (model: string) => ipcRenderer.invoke('models:pull', model),
   sendChat: (payload: unknown) => ipcRenderer.invoke('chat:send', payload),
   cancelChat: (requestId: string) => ipcRenderer.invoke('chat:cancel', requestId),
+  cleanupVoiceTranscript: (payload: unknown) => ipcRenderer.invoke('voice:cleanup', payload),
+  listHuggingFaceTtsModels: () => ipcRenderer.invoke('tts:hf-library'),
+  importHuggingFaceTtsModel: (modelId: string) => ipcRenderer.invoke('tts:hf-import', modelId),
+  importLocalHuggingFaceTtsModel: () => ipcRenderer.invoke('tts:hf-import-local'),
+  synthesizeHuggingFaceTts: (payload: unknown) => ipcRenderer.invoke('tts:hf-synthesize', payload),
+  startSpeechRecognition: (options: unknown) => ipcRenderer.invoke('speech:start', options),
+  stopSpeechRecognition: () => ipcRenderer.invoke('speech:stop'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   getUpdateStatus: () => ipcRenderer.invoke('updates:status'),
   downloadUpdate: () => ipcRenderer.invoke('updates:download'),
@@ -32,5 +39,6 @@ contextBridge.exposeInMainWorld('localAI', {
   onInstallLog: (callback: (line: string) => void) => subscribe<string>('ollama:install-log', callback),
   onPullProgress: (callback: (progress: PullProgress) => void) => subscribe<PullProgress>('models:pull-progress', callback),
   onChatToken: (callback: (token: ChatToken) => void) => subscribe<ChatToken>('chat:token', callback),
+  onSpeechRecognitionEvent: (callback: (event: LocalSpeechRecognitionEvent) => void) => subscribe<LocalSpeechRecognitionEvent>('speech:event', callback),
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => subscribe<UpdateStatus>('updates:status', callback)
 });
