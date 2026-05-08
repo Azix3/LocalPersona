@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('localAI', {
   synthesizeHuggingFaceTts: (payload: unknown) => ipcRenderer.invoke('tts:hf-synthesize', payload),
   startSpeechRecognition: (options: unknown) => ipcRenderer.invoke('speech:start', options),
   stopSpeechRecognition: () => ipcRenderer.invoke('speech:stop'),
+  transcribeWhisperAudio: (payload: unknown) => ipcRenderer.invoke('speech:whisper-transcribe', payload),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   getUpdateStatus: () => ipcRenderer.invoke('updates:status'),
   downloadUpdate: () => ipcRenderer.invoke('updates:download'),

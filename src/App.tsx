@@ -86,6 +86,7 @@ type SpeechRecognition = EventTarget & {
 type CallPhase = 'off' | 'waiting' | 'listening' | 'thinking' | 'speaking';
 type SendMessageOptions = { voiceResponse?: boolean };
 type SendMessageResult = { content: string; speechText?: string };
+type RecognitionCallback = (transcript: string, alternatives: string[]) => void;
 
 const avatarColors = ['#1f7a70', '#5750c9', '#c15a32', '#2f6fae', '#8a5a16', '#7b3f75', '#4e6b31', '#b9434a'];
 const THEME_STORAGE_KEY = 'localpersona-theme';
@@ -95,10 +96,16 @@ const TTS_BROWSER_COLLAPSED_KEY = 'localpersona-tts-browser-collapsed';
 const APP_VERSION = __APP_VERSION__;
 const VOSK_MODEL_URL = 'https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz';
 const VOSK_SAMPLE_RATE = 16000;
+const WHISPER_SAMPLE_RATE = 16000;
+const WHISPER_MIN_AUDIO_MS = 900;
+const WHISPER_WAKE_WINDOW_MS = 4200;
+const WHISPER_WAKE_INTERVAL_MS = 1400;
+const WHISPER_PROMPT_INTERVAL_MS = 1800;
 const PROMPT_SILENCE_MS = 3200;
 const SHORT_PROMPT_SILENCE_MS = 4500;
 const STOP_PROMPT_SILENCE_MS = 900;
 const MAX_PROMPT_LISTEN_MS = 18000;
+const WHISPER_PROMPT_MAX_MS = MAX_PROMPT_LISTEN_MS + 2000;
 
 function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => loadTheme());
@@ -159,6 +166,15 @@ function App() {
   const voskOutputRef = useRef<GainNode | null>(null);
   const voskRecognitionCallbackRef = useRef<((transcript: string, alternatives: string[]) => void) | null>(null);
   const voskFinalTranscriptRef = useRef('');
+  const whisperRecognitionCallbackRef = useRef<RecognitionCallback | null>(null);
+  const whisperSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const whisperProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const whisperOutputRef = useRef<GainNode | null>(null);
+  const whisperAudioChunksRef = useRef<Float32Array[]>([]);
+  const whisperAudioLengthRef = useRef(0);
+  const whisperLoopTimerRef = useRef<number | null>(null);
+  const whisperTranscribingRef = useRef(false);
+  const whisperLastTranscriptRef = useRef('');
   const callModeRef = useRef<'wake' | 'prompt'>('wake');
   const promptTranscriptRef = useRef('');
   const promptFirstTranscriptAtRef = useRef(0);
@@ -1030,6 +1046,10 @@ function App() {
       void startVoskRecognition(onTranscript, phrases);
       return;
     }
+    if (engine === 'whisper') {
+      void startWhisperRecognition(onTranscript, phrases, Recognition);
+      return;
+    }
     if (engine === 'windows') {
       startSystemRecognition(onTranscript, phrases, Recognition, false);
       return;
@@ -1251,6 +1271,179 @@ function App() {
     }
   }
 
+  async function startWhisperRecognition(
+    onTranscript: RecognitionCallback,
+    _phrases: string[] = [],
+    Recognition?: SpeechRecognitionConstructor
+  ) {
+    stopSystemRecognition();
+    stopBrowserRecognition();
+    stopVoskRecognition();
+    stopWhisperRecognition();
+    whisperRecognitionCallbackRef.current = onTranscript;
+    whisperAudioChunksRef.current = [];
+    whisperAudioLengthRef.current = 0;
+    whisperLastTranscriptRef.current = '';
+    setCallTranscript('Starting Whisper...');
+    try {
+      const stream = getActiveMediaStream() ?? (await prepareMicrophone());
+      if (!callActiveRef.current || whisperRecognitionCallbackRef.current !== onTranscript) {
+        return;
+      }
+
+      let context = audioContextRef.current;
+      if (!context) {
+        startMicMeter(stream);
+        context = audioContextRef.current;
+      }
+      if (!context) {
+        throw new Error('Audio processing is not available.');
+      }
+      if (context.state === 'suspended') {
+        await context.resume().catch(() => undefined);
+      }
+      if (!callActiveRef.current || whisperRecognitionCallbackRef.current !== onTranscript) {
+        return;
+      }
+
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      const output = context.createGain();
+      output.gain.value = 0;
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        const chunk = resampleAudio(input, context.sampleRate || WHISPER_SAMPLE_RATE, WHISPER_SAMPLE_RATE);
+        appendWhisperAudio(chunk, callModeRef.current === 'wake' ? WHISPER_WAKE_WINDOW_MS : WHISPER_PROMPT_MAX_MS);
+      };
+      source.connect(processor);
+      processor.connect(output);
+      output.connect(context.destination);
+
+      whisperSourceRef.current = source;
+      whisperProcessorRef.current = processor;
+      whisperOutputRef.current = output;
+      setCallTranscript('Mic ready');
+      scheduleWhisperTranscription(onTranscript, 350);
+    } catch (error) {
+      stopWhisperRecognition();
+      if (Recognition) {
+        startBrowserRecognition(Recognition, onTranscript, _phrases, false);
+      } else {
+        setCallError(`Whisper speech recognition failed: ${errorMessage(error)}`);
+      }
+    }
+  }
+
+  function scheduleWhisperTranscription(onTranscript: RecognitionCallback, delayMs?: number) {
+    if (whisperLoopTimerRef.current !== null) {
+      window.clearTimeout(whisperLoopTimerRef.current);
+      whisperLoopTimerRef.current = null;
+    }
+    const nextDelay =
+      delayMs ?? (callModeRef.current === 'wake' ? WHISPER_WAKE_INTERVAL_MS : WHISPER_PROMPT_INTERVAL_MS);
+    whisperLoopTimerRef.current = window.setTimeout(() => {
+      whisperLoopTimerRef.current = null;
+      void runWhisperTranscription(onTranscript);
+    }, nextDelay);
+  }
+
+  async function runWhisperTranscription(onTranscript: RecognitionCallback) {
+    if (!callActiveRef.current || whisperRecognitionCallbackRef.current !== onTranscript) {
+      return;
+    }
+    if (whisperTranscribingRef.current) {
+      scheduleWhisperTranscription(onTranscript);
+      return;
+    }
+
+    const maxWindowMs = callModeRef.current === 'wake' ? WHISPER_WAKE_WINDOW_MS : WHISPER_PROMPT_MAX_MS;
+    const audio = getWhisperAudioWindow(maxWindowMs);
+    const minSamples = Math.floor((WHISPER_SAMPLE_RATE * WHISPER_MIN_AUDIO_MS) / 1000);
+    if (audio.length >= minSamples && hasSpeechLikeAudio(audio)) {
+      whisperTranscribingRef.current = true;
+      try {
+        const result = await window.localAI.transcribeWhisperAudio({
+          audio: audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength),
+          language: 'english'
+        });
+        if (callActiveRef.current && whisperRecognitionCallbackRef.current === onTranscript) {
+          const transcript = result.text.replace(/\s+/g, ' ').trim();
+          if (transcript && transcript !== whisperLastTranscriptRef.current) {
+            whisperLastTranscriptRef.current = transcript;
+            onTranscript(transcript, [transcript]);
+          }
+        }
+      } catch (error) {
+        if (callActiveRef.current && whisperRecognitionCallbackRef.current === onTranscript) {
+          setCallError(`Whisper speech recognition failed: ${errorMessage(error)}`);
+        }
+      } finally {
+        if (whisperRecognitionCallbackRef.current === onTranscript) {
+          whisperTranscribingRef.current = false;
+        }
+      }
+    }
+
+    if (callActiveRef.current && whisperRecognitionCallbackRef.current === onTranscript) {
+      scheduleWhisperTranscription(onTranscript);
+    }
+  }
+
+  function appendWhisperAudio(chunk: Float32Array, maxWindowMs: number) {
+    if (chunk.length === 0) {
+      return;
+    }
+
+    whisperAudioChunksRef.current.push(chunk);
+    whisperAudioLengthRef.current += chunk.length;
+    const maxSamples = Math.floor((WHISPER_SAMPLE_RATE * maxWindowMs) / 1000);
+    while (whisperAudioLengthRef.current > maxSamples && whisperAudioChunksRef.current.length > 0) {
+      const overflow = whisperAudioLengthRef.current - maxSamples;
+      const first = whisperAudioChunksRef.current[0];
+      if (first.length <= overflow) {
+        whisperAudioChunksRef.current.shift();
+        whisperAudioLengthRef.current -= first.length;
+      } else {
+        whisperAudioChunksRef.current[0] = first.subarray(overflow);
+        whisperAudioLengthRef.current -= overflow;
+      }
+    }
+  }
+
+  function getWhisperAudioWindow(maxWindowMs: number) {
+    const maxSamples = Math.floor((WHISPER_SAMPLE_RATE * maxWindowMs) / 1000);
+    const targetLength = Math.min(whisperAudioLengthRef.current, maxSamples);
+    const audio = new Float32Array(targetLength);
+    let writeOffset = targetLength;
+    let remaining = targetLength;
+    for (let index = whisperAudioChunksRef.current.length - 1; index >= 0 && remaining > 0; index -= 1) {
+      const chunk = whisperAudioChunksRef.current[index];
+      const take = Math.min(chunk.length, remaining);
+      writeOffset -= take;
+      audio.set(chunk.subarray(chunk.length - take), writeOffset);
+      remaining -= take;
+    }
+    return audio;
+  }
+
+  function hasSpeechLikeAudio(audio: Float32Array) {
+    if (audio.length === 0) {
+      return false;
+    }
+    let sumSquares = 0;
+    let peak = 0;
+    for (let index = 0; index < audio.length; index += 1) {
+      const sample = Math.abs(audio[index] || 0);
+      sumSquares += sample * sample;
+      if (sample > peak) {
+        peak = sample;
+      }
+    }
+    const rms = Math.sqrt(sumSquares / audio.length);
+    const sensitivity = storeRef.current?.microphoneSensitivity ?? 0.08;
+    return rms > Math.max(0.0035, sensitivity * 0.05) || peak > Math.max(0.025, sensitivity * 0.25);
+  }
+
   function getActiveMediaStream() {
     const stream = mediaStreamRef.current;
     return stream?.getAudioTracks().some((track) => track.readyState === 'live') ? stream : null;
@@ -1260,6 +1453,7 @@ function App() {
     stopSystemRecognition();
     stopBrowserRecognition();
     stopVoskRecognition();
+    stopWhisperRecognition();
   }
 
   function stopSystemRecognition() {
@@ -1317,6 +1511,43 @@ function App() {
     voskFinalTranscriptRef.current = '';
     try {
       recognizer?.remove();
+    } catch {
+      undefined;
+    }
+  }
+
+  function stopWhisperRecognition() {
+    whisperRecognitionCallbackRef.current = null;
+    if (whisperLoopTimerRef.current !== null) {
+      window.clearTimeout(whisperLoopTimerRef.current);
+      whisperLoopTimerRef.current = null;
+    }
+    whisperTranscribingRef.current = false;
+    whisperAudioChunksRef.current = [];
+    whisperAudioLengthRef.current = 0;
+    whisperLastTranscriptRef.current = '';
+
+    const processor = whisperProcessorRef.current;
+    whisperProcessorRef.current = null;
+    if (processor) {
+      processor.onaudioprocess = null;
+      try {
+        processor.disconnect();
+      } catch {
+        undefined;
+      }
+    }
+    const source = whisperSourceRef.current;
+    whisperSourceRef.current = null;
+    try {
+      source?.disconnect();
+    } catch {
+      undefined;
+    }
+    const output = whisperOutputRef.current;
+    whisperOutputRef.current = null;
+    try {
+      output?.disconnect();
     } catch {
       undefined;
     }
@@ -2255,6 +2486,7 @@ function SettingsModal({
                 >
                   <option value="browser">Browser microphone</option>
                   <option value="vosk">Vosk offline</option>
+                  <option value="whisper">OpenAI Whisper local</option>
                   <option value="auto">Browser, then Vosk</option>
                   <option value="windows">Windows speech</option>
                 </select>
@@ -3091,6 +3323,27 @@ function mergeTranscriptParts(existing: string, next: string) {
     return cleanNext;
   }
   return `${cleanExisting} ${cleanNext}`;
+}
+
+function resampleAudio(input: Float32Array, inputSampleRate: number, outputSampleRate: number) {
+  if (inputSampleRate === outputSampleRate) {
+    return new Float32Array(input);
+  }
+  if (!input.length || !Number.isFinite(inputSampleRate) || inputSampleRate <= 0) {
+    return new Float32Array();
+  }
+
+  const ratio = inputSampleRate / outputSampleRate;
+  const outputLength = Math.max(1, Math.round(input.length / ratio));
+  const output = new Float32Array(outputLength);
+  for (let index = 0; index < outputLength; index += 1) {
+    const sourceIndex = index * ratio;
+    const leftIndex = Math.floor(sourceIndex);
+    const rightIndex = Math.min(input.length - 1, leftIndex + 1);
+    const fraction = sourceIndex - leftIndex;
+    output[index] = (input[leftIndex] || 0) * (1 - fraction) + (input[rightIndex] || 0) * fraction;
+  }
+  return output;
 }
 
 function phraseMatchesTranscript(phrase: string, transcript: string) {

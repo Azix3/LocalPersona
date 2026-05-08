@@ -17,7 +17,9 @@ import type {
   PullProgress,
   UpdateStatus,
   VoiceCleanupPayload,
-  VoiceCleanupResult
+  VoiceCleanupResult,
+  WhisperTranscriptionPayload,
+  WhisperTranscriptionResult
 } from './types';
 
 type Unsubscribe = () => void;
@@ -44,6 +46,7 @@ declare global {
             | 'selectedOutputDeviceId'
             | 'microphoneSensitivity'
             | 'speechRecognitionEngine'
+            | 'experimentalVoiceFeatures'
             | 'experimentalContinuousVoiceConversation'
             | 'experimentalVoiceCleanup'
           >
@@ -66,6 +69,7 @@ declare global {
       synthesizeHuggingFaceTts: (payload: HuggingFaceTtsPayload) => Promise<HuggingFaceTtsResult>;
       startSpeechRecognition: (options?: { phrases?: string[] }) => Promise<{ started: boolean; error?: string }>;
       stopSpeechRecognition: () => Promise<boolean>;
+      transcribeWhisperAudio: (payload: WhisperTranscriptionPayload) => Promise<WhisperTranscriptionResult>;
       checkForUpdates: () => Promise<UpdateStatus>;
       getUpdateStatus: () => Promise<UpdateStatus>;
       downloadUpdate: () => Promise<UpdateStatus>;

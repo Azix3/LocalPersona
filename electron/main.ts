@@ -27,7 +27,9 @@ import type {
   UpdatePackageKind,
   UpdateStatus,
   VoiceCleanupPayload,
-  VoiceCleanupResult
+  VoiceCleanupResult,
+  WhisperTranscriptionPayload,
+  WhisperTranscriptionResult
 } from '../src/types';
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_API_BASE ?? 'http://127.0.0.1:11434';
@@ -106,6 +108,7 @@ const VOICE_CLEANUP_CONFIDENCE_THRESHOLD = 0.68;
 const DEFAULT_HF_TTS_SPEECHT5_SPEAKER =
   'https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin';
 const DEFAULT_HF_TTS_KOKORO_VOICE = 'af_heart';
+const DEFAULT_WHISPER_ASR_MODEL = 'Xenova/whisper-tiny.en';
 const fallbackHuggingFaceTtsModels: HuggingFaceTtsModel[] = [
   {
     id: 'Xenova/speecht5_tts',
@@ -177,6 +180,7 @@ let updateErrorIsSilent = false;
 let portableUpdateAsset: PortableUpdateAsset | null = null;
 const hfTtsPipelineCache = new Map<string, Promise<unknown>>();
 const kokoroTtsCache = new Map<string, Promise<KokoroTtsEngine>>();
+const whisperAsrPipelineCache = new Map<string, Promise<WhisperAsrPipeline>>();
 
 type PortableUpdateAsset = {
   version: string;
@@ -190,6 +194,8 @@ type KokoroTtsEngine = {
   voices?: Record<string, unknown>;
   generate: (text: string, options?: { voice?: string; speed?: number }) => Promise<unknown>;
 };
+
+type WhisperAsrPipeline = (audio: Float32Array, options?: Record<string, unknown>) => Promise<unknown>;
 
 type GitHubRelease = {
   tag_name?: string;
@@ -753,6 +759,7 @@ function registerIpc() {
   ipcMain.handle('tts:hf-synthesize', async (_event, payload: HuggingFaceTtsPayload) => synthesizeHuggingFaceTts(payload));
   ipcMain.handle('speech:start', async (_event, options?: { phrases?: unknown }) => startLocalSpeechRecognition(options));
   ipcMain.handle('speech:stop', async () => stopLocalSpeechRecognition());
+  ipcMain.handle('speech:whisper-transcribe', async (_event, payload: WhisperTranscriptionPayload) => transcribeWhisperAudio(payload));
   ipcMain.handle('updates:check', async () => checkForUpdates(true));
   ipcMain.handle('updates:download', async () => downloadUpdate());
   ipcMain.handle('updates:install', async () => installDownloadedUpdate());
@@ -1265,7 +1272,7 @@ function normalizePromptMode(value: unknown): PromptMode {
 }
 
 function normalizeSpeechRecognitionEngine(value: unknown): SpeechRecognitionEngine {
-  return value === 'vosk' || value === 'windows' || value === 'auto' ? value : 'browser';
+  return value === 'vosk' || value === 'whisper' || value === 'windows' || value === 'auto' ? value : 'browser';
 }
 
 function normalizeTtsProvider(value: unknown) {
@@ -1882,6 +1889,38 @@ async function synthesizeHuggingFaceTts(payload: HuggingFaceTtsPayload): Promise
   }
 }
 
+async function transcribeWhisperAudio(payload: WhisperTranscriptionPayload): Promise<WhisperTranscriptionResult> {
+  const input = payload && typeof payload === 'object' ? (payload as Partial<WhisperTranscriptionPayload>) : {};
+  const audio = coerceWhisperAudio(input.audio);
+  if (!audio || audio.length === 0) {
+    return { text: '', model: DEFAULT_WHISPER_ASR_MODEL };
+  }
+
+  const transcriber = await getWhisperAsrPipeline(DEFAULT_WHISPER_ASR_MODEL);
+  const durationSeconds = audio.length / 16000;
+  const options: Record<string, unknown> = {
+    return_timestamps: false
+  };
+  if (!isEnglishOnlyWhisperModel(DEFAULT_WHISPER_ASR_MODEL)) {
+    options.language = String(input.language || 'english').trim() || 'english';
+    options.task = 'transcribe';
+  }
+  if (durationSeconds > 24) {
+    options.chunk_length_s = 24;
+    options.stride_length_s = 4;
+  }
+
+  const output = await transcriber(audio, options);
+  return {
+    text: cleanWhisperTranscript(extractWhisperTranscript(output)),
+    model: DEFAULT_WHISPER_ASR_MODEL
+  };
+}
+
+function isEnglishOnlyWhisperModel(modelId: string) {
+  return /\.en(?:$|[/?#])/i.test(modelId);
+}
+
 async function synthesizeKokoroTts(
   text: string,
   modelPath: string,
@@ -1985,6 +2024,37 @@ async function getHuggingFaceTtsPipeline(model: string, dtype: HuggingFaceTtsDty
     return await promise;
   } catch (error) {
     hfTtsPipelineCache.delete(cacheKey);
+    throw error;
+  }
+}
+
+async function getWhisperAsrPipeline(model: string): Promise<WhisperAsrPipeline> {
+  const existing = whisperAsrPipelineCache.get(model);
+  if (existing) {
+    return existing;
+  }
+
+  const promise = (async () => {
+    const transformers = await import('@huggingface/transformers');
+    transformers.env.allowLocalModels = true;
+    transformers.env.allowRemoteModels = true;
+    transformers.env.cacheDir = path.join(app.getPath('userData'), 'huggingface-cache');
+    await fs.mkdir(transformers.env.cacheDir, { recursive: true });
+    const pipeline = transformers.pipeline as unknown as (
+      task: string,
+      modelId: string,
+      options?: Record<string, unknown>
+    ) => Promise<WhisperAsrPipeline>;
+    return pipeline('automatic-speech-recognition', model, {
+      dtype: 'q8',
+      cache_dir: transformers.env.cacheDir
+    });
+  })();
+  whisperAsrPipelineCache.set(model, promise);
+  try {
+    return await promise;
+  } catch (error) {
+    whisperAsrPipelineCache.delete(model);
     throw error;
   }
 }
@@ -2223,6 +2293,43 @@ function coerceFloatAudio(value: unknown): Float32Array | undefined {
     return new Float32Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
   }
   return undefined;
+}
+
+function coerceWhisperAudio(value: unknown): Float32Array | undefined {
+  if (value instanceof Float32Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Float32Array(value);
+  }
+  if (Array.isArray(value)) {
+    const samples = value.map((sample) => Number(sample));
+    return Float32Array.from(samples.map((sample) => (Number.isFinite(sample) ? Math.max(-1, Math.min(1, sample)) : 0)));
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Float32Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  }
+  return undefined;
+}
+
+function extractWhisperTranscript(output: unknown) {
+  const first = Array.isArray(output) ? output[0] : output;
+  if (!first || typeof first !== 'object') {
+    return '';
+  }
+  return String((first as { text?: unknown }).text || '');
+}
+
+function cleanWhisperTranscript(value: string) {
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  const normalized = cleaned.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (
+    normalized === 'thank you for watching' ||
+    normalized === 'thanks for watching'
+  ) {
+    return '';
+  }
+  return cleaned;
 }
 
 function encodePcm16Wav(samples: Float32Array, sampleRate: number) {

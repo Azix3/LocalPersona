@@ -1,6 +1,6 @@
 export type ChatRole = 'system' | 'user' | 'assistant';
 export type PromptMode = 'roleplay' | 'assistant';
-export type SpeechRecognitionEngine = 'browser' | 'vosk' | 'windows' | 'auto';
+export type SpeechRecognitionEngine = 'browser' | 'vosk' | 'whisper' | 'windows' | 'auto';
 export type TtsProvider = 'system' | 'huggingface';
 export type HuggingFaceTtsDtype = 'fp32' | 'fp16' | 'q8' | 'q4' | 'q4f16';
 
@@ -175,9 +175,19 @@ export type HuggingFaceTtsResult = {
   model: string;
 };
 
+export type WhisperTranscriptionPayload = {
+  audio: ArrayBuffer | Float32Array | number[];
+  language?: string;
+};
+
+export type WhisperTranscriptionResult = {
+  text: string;
+  model: string;
+};
+
 export type LocalSpeechRecognitionEvent = {
   type: 'ready' | 'transcript' | 'level' | 'error' | 'end';
-  engine: 'windows' | 'browser' | 'vosk';
+  engine: 'windows' | 'browser' | 'vosk' | 'whisper';
   transcript?: string;
   alternatives?: string[];
   confidence?: number;
